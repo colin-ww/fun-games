@@ -345,6 +345,20 @@ register({
   decorate: fig => fig.setAttribute('role', 'button'),
 });
 
+// ---- Level 7 · animals instead of people (v0.5.0) -----------------------------
+{
+  const ANIMALS = ['🐸', '🐵', '🐷', '🐶'];
+
+  register({
+    id: 'animals', level: 7, since: '0.5.0',
+    title: 'Animals instead of people',
+    desc: 'Frog, monkey, pig and dog take over. Overrides the people skins.',
+    skin: {
+      draw: i => `<text x="50" y="54" font-size="76" text-anchor="middle" dominant-baseline="central">${ANIMALS[i]}</text>`,
+    },
+  });
+}
+
 // ===== FEATURES ABOVE THIS LINE =====
 
 /* ---- boot --------------------------------------------------------------------- */
