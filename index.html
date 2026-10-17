@@ -119,11 +119,13 @@ app.sync = () => {
 };
 
 app.render = () => {
-  const skin = [...FEATURES].reverse().find(f => f.skin && app.on.has(f.id)).skin;   // last enabled skin wins
+  // last enabled skin wins; a figure that has a photo needs a skin that can show one
+  const skins = FEATURES.filter(f => f.skin && app.on.has(f.id)).map(f => f.skin).reverse();
+  const skinFor = i => (app.headPhoto(i) && skins.find(s => s.photoCapable)) || skins[0];
   app.stage.replaceChildren(...Array.from({ length: FIGURES }, (_, i) => {
     const spinner = el('div', { className: 'spinner' });
     spinner.style.setProperty('--dur', DURATIONS[i] + 's');
-    spinner.innerHTML = `<svg viewBox="0 0 100 100" aria-hidden="true">${skin.draw(i, app.headPhoto(i))}</svg>`;
+    spinner.innerHTML = `<svg viewBox="0 0 100 100" aria-hidden="true">${skinFor(i).draw(i, app.headPhoto(i))}</svg>`;
     const fig = el('div', { className: 'fig' }, spinner);
     fig.dataset.i = i;
     return fig;
@@ -216,6 +218,7 @@ function buildPanel() {
     title: 'Spinning stick figures',
     desc: '4 stick figures spinning on the spot, looping forever.',
     skin: {
+      photoCapable: true,
       draw(i, photo) {
         const c = COLORS[i], [[lx, ly], [rx, ry]] = ARMS[i];
         const head = photo
@@ -305,6 +308,7 @@ function buildPanel() {
     title: 'Rounder, friendlier figures',
     desc: 'Colourful bodies, faces and silly hats instead of sticks.',
     skin: {
+      photoCapable: true,
       draw(i, photo) {
         const c = COLORS[i], [[lx, ly], [rx, ry]] = ARMS[i];
         const face = photo
@@ -355,6 +359,46 @@ register({
     desc: 'Frog, monkey, pig and dog take over. Overrides the people skins.',
     skin: {
       draw: i => `<text x="50" y="54" font-size="76" text-anchor="middle" dominant-baseline="central">${ANIMALS[i]}</text>`,
+    },
+  });
+}
+
+// ---- Level 4 · real faces as heads (v0.6.0) -----------------------------------
+{
+  const photos = Array(FIGURES).fill(null);        // in memory only: never uploaded, never saved
+
+  // centre-crop to a 256px square; createImageBitmap also applies the phone's EXIF rotation
+  const toSquare = async file => {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => createImageBitmap(file));
+    const side = Math.min(bmp.width, bmp.height), size = 256;
+    const canvas = el('canvas', { width: size, height: size });
+    canvas.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+    bmp.close?.();
+    return canvas.toDataURL('image/jpeg', 0.85);
+  };
+
+  register({
+    id: 'photo', level: 4, since: '0.6.0',
+    title: 'Real faces as heads',
+    desc: 'Tap 📷 on a figure to pick a photo for its head (beats animals). Stays on the device, never uploaded.',
+    css: `.cam { position: absolute; right: 2px; bottom: 2px; width: 44px; height: 44px; display: grid; place-items: center;
+                 border-radius: 50%; background: #fff; border: 2px solid var(--ink); font-size: 1.3rem; cursor: pointer; }
+          .cam input { display: none; }`,
+    enable({ app, ui, onDispose }) {
+      app.headPhoto = i => photos[i];
+      onDispose(() => { app.headPhoto = () => null; });
+      ui(el('button', { textContent: '🧹 Clear photos', onclick: () => { photos.fill(null); app.render(); } }));
+      ui(el('span', { className: 'note', textContent: '📷 Photos stay on this device — nothing is uploaded.' }));
+    },
+    decorate(fig, i, app) {
+      const input = el('input', { type: 'file', accept: 'image/*' });
+      input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+        photos[i] = await toSquare(file);
+        app.render();
+      };
+      fig.append(el('label', { className: 'cam', title: 'Pick a photo', ariaLabel: 'Pick a photo for this figure' }, '📷', input));
     },
   });
 }
