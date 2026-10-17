@@ -233,6 +233,60 @@ function buildPanel() {
   });
 }
 
+// ---- Level 2 · beep beep tune (v0.2.0) ---------------------------------------
+{
+  const NOTES = [523.25, 587.33, 659.25, 783.99, 880];          // C D E G A (pentatonic: can't sound bad)
+  const TUNE = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 4, 3, 2, 1, 0, 0];
+
+  register({
+    id: 'sound', level: 2, since: '0.2.0',
+    title: 'Beep beep tune',
+    desc: 'Each spinning figure plays its own beat of a little tune. Needs one tap to start (phone rule).',
+    css: `#toolbar .big.pulse { animation: pulse 1s ease-in-out infinite; background: #ffe066; }
+          @keyframes pulse { 50% { transform: scale(1.06); } }`,
+    enable({ app, ui, listen, every, onDispose }) {
+      let audio = null, muted = false, step = 0;
+      const running = () => audio?.state === 'running';
+
+      const label = () => {
+        btn.textContent = !running() ? '▶ Start sound' : muted ? '🔇 Sound off' : '🔊 Sound on';
+        btn.classList.toggle('pulse', !running());
+      };
+      const unlock = () => {
+        audio ??= new (window.AudioContext || window.webkitAudioContext)();
+        audio.onstatechange = label;
+        audio.resume?.().then(label);
+      };
+      const btn = ui(el('button', {
+        className: 'big',
+        onclick: () => { if (!running()) unlock(); else { muted = !muted; label(); } },
+      }));
+      label();
+      listen(document, 'click', () => { if (!running()) unlock(); });      // any tap unlocks audio
+      listen(document, 'touchend', () => { if (!running()) unlock(); });
+
+      const beep = freq => {
+        const t = audio.currentTime, osc = audio.createOscillator(), gain = audio.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(t);
+        osc.stop(t + 0.2);
+      };
+
+      // figure (step % 4) plays on its own step: 4 spinning = full tune, fewer = gaps
+      every(230, () => {
+        const n = step++;
+        if (running() && !muted && app.spin[n % FIGURES]) beep(NOTES[TUNE[n % TUNE.length]]);
+      });
+      onDispose(() => audio?.close());
+    },
+  });
+}
+
 // ===== FEATURES ABOVE THIS LINE =====
 
 /* ---- boot --------------------------------------------------------------------- */
