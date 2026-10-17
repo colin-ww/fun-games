@@ -1,0 +1,8 @@
+# Kid photos must never land in this (public) repo. The photo level keeps
+# images in memory only; this is a safety net against dragging them into git.
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.webp
+*.gif
