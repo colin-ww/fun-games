@@ -465,6 +465,44 @@ register({
   },
 });
 
+// ---- Level 8 · shake the phone (v0.8.0) ---------------------------------------
+register({
+  id: 'shake', level: 8, since: '0.8.0', controls: true,
+  title: 'Shake the phone',
+  desc: 'A shake toggles all spinning, or makes a random figure vanish/reappear. iOS asks permission. Desktop: press S.',
+  enable({ app, ui, listen, onDispose }) {
+    const note = ui(el('span', { className: 'note', textContent: '📳 On a computer, press S to "shake".' }));
+    const btn = ui(el('button', { textContent: '📳 Enable shake', onclick: arm }));
+
+    const shake = () => {
+      if (Math.random() < 0.65) app.setSpin(!app.spin.some(Boolean));
+      else { const i = Math.floor(Math.random() * FIGURES); app.gone[i] = !app.gone[i]; app.sync(); }
+    };
+    onDispose(() => { app.gone.fill(false); app.sync(); });
+    listen(window, 'keydown', e => {
+      if (e.key.toLowerCase() === 's' && !/input|select|textarea/i.test(e.target.tagName)) shake();
+    });
+
+    async function arm() {
+      if (typeof DeviceMotionEvent === 'undefined') { note.textContent = '📳 No motion sensor here — press S instead.'; return; }
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {          // iOS: must be asked from a tap
+        const answer = await DeviceMotionEvent.requestPermission().catch(() => 'denied');
+        if (answer !== 'granted') { note.textContent = '📳 Motion permission denied — press S instead.'; return; }
+      }
+      let last = null, cooldown = 0;
+      listen(window, 'devicemotion', e => {
+        const a = e.accelerationIncludingGravity;
+        if (!a) return;
+        const mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
+        if (last !== null && Math.abs(mag - last) > 12 && performance.now() > cooldown) { cooldown = performance.now() + 700; shake(); }
+        last = mag;
+      });
+      btn.hidden = true;
+      note.textContent = '📳 Shake it!';
+    }
+  },
+});
+
 // ===== FEATURES ABOVE THIS LINE =====
 
 /* ---- boot --------------------------------------------------------------------- */
