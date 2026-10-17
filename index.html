@@ -328,6 +328,23 @@ function buildPanel() {
   });
 }
 
+// ---- Level 5 · tap a figure to start/stop it (v0.4.0) -------------------------
+register({
+  id: 'tap', level: 5, since: '0.4.0', controls: true,
+  title: 'Tap to start/stop',
+  desc: 'Tap a figure to freeze or free it. Plus start-all / stop-all buttons.',
+  css: `.fig { cursor: pointer; }`,
+  enable({ app, ui, listen }) {
+    listen(app.stage, 'click', e => {
+      const fig = e.target.closest('.fig');
+      if (fig && !e.target.closest('.cam')) app.toggleSpin(+fig.dataset.i);
+    });
+    ui(el('button', { textContent: '▶ All spin', onclick: () => app.setSpin(true) }));
+    ui(el('button', { textContent: '⏹ All stop', onclick: () => app.setSpin(false) }));
+  },
+  decorate: fig => fig.setAttribute('role', 'button'),
+});
+
 // ===== FEATURES ABOVE THIS LINE =====
 
 /* ---- boot --------------------------------------------------------------------- */
