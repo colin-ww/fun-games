@@ -7,6 +7,7 @@
 <style>
   :root { --bg: #fff8e7; --ink: #2b2d42; --card: #fff; --line: #e6dcc0; }
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { margin: 0; min-height: 100%; }
   body {
     background: var(--bg); color: var(--ink); font: 16px/1.4 system-ui, sans-serif;
@@ -402,6 +403,67 @@ register({
     },
   });
 }
+
+// ---- Level 6 · noise makes them spin (v0.7.0) ---------------------------------
+register({
+  id: 'mic', level: 6, since: '0.7.0', controls: true,
+  title: 'Noise starts/stops the spin',
+  desc: 'Make a noise and they spin; go quiet for a second and they stop. Needs mic permission + HTTPS.',
+  css: `.meter { flex: 1 1 140px; max-width: 260px; height: 14px; background: #fff; border: 2px solid var(--ink); border-radius: 99px; overflow: hidden; }
+        .meter i { display: block; height: 100%; width: 0; background: #2a9d8f; }
+        .sens { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }`,
+  enable({ app, ui, onDispose }) {
+    let stream = null, actx = null, raf = 0, disposed = false;
+    const note = ui(el('span', { className: 'note' }));
+    const bar = el('i');
+    const meter = ui(el('div', { className: 'meter', hidden: true }, bar));
+    const slider = el('input', { type: 'range', min: 1, max: 100, value: 60 });
+    const sens = ui(el('label', { className: 'sens', hidden: true }, 'Sensitivity', slider));
+    const btn = ui(el('button', { textContent: '🎤 Listen', onclick: () => stream ? stop() : start() }));
+
+    function stop() {
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach(t => t.stop());
+      actx?.close();
+      stream = actx = null;
+      btn.textContent = '🎤 Listen';
+      meter.hidden = sens.hidden = true;
+    }
+
+    async function start() {
+      let s;
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch { note.textContent = '🎤 No mic access — needs HTTPS and a "yes" to the permission prompt.'; return; }
+      if (disposed) return s.getTracks().forEach(t => t.stop());
+      stream = s;
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      await actx.resume();
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 1024;
+      actx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+
+      note.textContent = '🎤 Listening — make some noise!';
+      btn.textContent = '🛑 Stop listening';
+      meter.hidden = sens.hidden = false;
+      app.setSpin(false);
+
+      let lastLoud = 0;
+      const loop = () => {
+        analyser.getByteTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((sum, v) => sum + ((v - 128) / 128) ** 2, 0) / buf.length);
+        bar.style.width = Math.min(100, rms * 500) + '%';
+        const threshold = 0.01 + 0.2 * (1 - slider.value / 100);      // higher slider = more sensitive
+        const now = performance.now();
+        if (rms > threshold) { lastLoud = now; if (!app.spin.every(Boolean)) app.setSpin(true); }
+        else if (now - lastLoud > 1000 && app.spin.some(Boolean)) app.setSpin(false);
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+    onDispose(() => { disposed = true; stop(); });
+  },
+});
 
 // ===== FEATURES ABOVE THIS LINE =====
 
