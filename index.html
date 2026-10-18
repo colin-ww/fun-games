@@ -66,6 +66,8 @@
   #settings label { display: flex; gap: .6rem; align-items: center; padding: .45rem 0; border-top: 1px solid var(--line); }
   #settings input[type=checkbox] { width: 1.4rem; height: 1.4rem; flex: none; }
   #settings .btn { min-height: 44px; font-size: 1rem; margin-top: .6rem; }
+  #diag { margin-top: 1rem; padding-top: .6rem; border-top: 1px solid var(--line); }
+  #audiostatus { margin: .5rem 0 0; font: .8rem/1.4 ui-monospace, monospace; opacity: .75; word-break: break-word; }
   footer { margin-top: 1rem; text-align: center; font-size: .8rem; opacity: .6; }
 </style>
 </head>
@@ -80,6 +82,10 @@
     <summary>🛠 Something broken? Turn things off</summary>
     <div id="switches"></div>
     <button class="btn" id="reset">↩︎ Turn everything back on &amp; reset</button>
+    <div id="diag">
+      <button class="btn" id="testsound">🔔 Test sound</button>
+      <p id="audiostatus"></p>
+    </div>
   </details>
   <footer id="footer"></footer>
 </div>
@@ -285,16 +291,40 @@ const applyVolume = () => audio.master?.gain.setTargetAtTime(audio.muted ? 0 : L
 app.setVolume = v => { audio.volume = v; if (audio.ctx) applyVolume(); app.emit('volume'); };
 app.setMuted = m => { audio.muted = m; if (audio.ctx) applyVolume(); app.emit('volume'); };
 
+/* iOS: Web Audio obeys the ringer (silent) switch, <audio> playback doesn't. A looping near-silent clip,
+   started inside a tap, flips the page into "playback" mode. iOS 16.4+ also has navigator.audioSession for
+   this; we use both because older iPads/iPhones only know the clip. */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const keepAlive = IS_IOS ? (() => {
+  const rate = 8000, n = rate / 4, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const tag = (o, str) => [...str].forEach((ch, i) => v.setUint8(o + i, ch.charCodeAt(0)));
+  tag(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); tag(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); tag(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) v.setInt16(44 + i * 2, i % 2, true);       // ±1 LSB: inaudible, but not digital silence
+  const a = new Audio(URL.createObjectURL(new Blob([buf], { type: 'audio/wav' })));
+  a.loop = true;
+  a.setAttribute('playsinline', '');
+  return a;
+})() : null;
+
+const audioSessionType = type => { try { navigator.audioSession.type = type; } catch { /* not supported */ } };
+
 function ensureAudio() {
   if (!audio.ctx) {
-    try { navigator.audioSession.type = 'playback'; } catch { /* iOS 16.4+: ignore the silent switch */ }
+    audioSessionType('playback');
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     audio.master = ctx.createGain();
     audio.master.connect(ctx.createDynamicsCompressor()).connect(ctx.destination);
     audio.ctx = ctx;
     ctx.onstatechange = () => app.emit('audio');
     applyVolume();
+    const blip = ctx.createBufferSource();                    // iOS wants a real node started inside the tap
+    blip.buffer = ctx.createBuffer(1, 1, 22050);
+    blip.connect(ctx.destination);
+    blip.start(0);
   }
+  keepAlive?.play().catch(() => { /* not inside a tap: the next tap retries */ });
   if (audio.ctx.state !== 'running') audio.ctx.resume?.();
   app.emit('audio');
 }
@@ -324,11 +354,12 @@ app.preview = (name, fig = Math.floor(Math.random() * FIGURES)) => {      // one
 }
 
 {
-  const unlock = () => { if (audio.ctx?.state !== 'running') ensureAudio(); };
+  const unlock = () => { if (audio.ctx?.state !== 'running' || keepAlive?.paused) ensureAudio(); };
   ['click', 'touchend', 'keydown'].forEach(type => document.addEventListener(type, unlock, true));
   document.addEventListener('visibilitychange', () => {
     if (!audio.ctx) return;
-    document.hidden ? audio.ctx.suspend() : audio.ctx.resume?.();
+    if (document.hidden) { audio.ctx.suspend(); keepAlive?.pause(); }
+    else { audio.ctx.resume?.(); keepAlive?.play().catch(() => {}); }
   });
 
   const soundBtn = el('button', { className: 'btn pulse', textContent: '🔊 Tap to turn sound on', onclick: ensureAudio });
@@ -438,6 +469,9 @@ function buildSwitches() {
       const cb = el('input', { type: 'checkbox', id: 'mute', onchange: () => app.setMuted(cb.checked) });
       return el('label', {}, cb, '🔇 Mute all sound');
     })());
+  $('#testsound').onclick = () => { app.preview('bell'); setTimeout(syncSwitches, 400); };
+  (app.listeners.audio ??= []).push(syncSwitches);
+  app.listeners.volume = [...(app.listeners.volume ?? []), syncSwitches];
   $('#reset').onclick = () => {
     Object.assign(app.choice, Object.fromEntries(GROUPS.map(g => [g.id, g.default])));
     app.flags = {};
@@ -446,9 +480,19 @@ function buildSwitches() {
     applyFeatures(FEATURES.map(f => f.id));
   };
 }
+function audioReport() {
+  const bits = [
+    `audio ${audio.ctx ? audio.ctx.state : 'not started yet (tap anywhere)'}`,
+    `session ${navigator.audioSession ? navigator.audioSession.type : 'n/a'}`,
+    IS_IOS ? `iOS silent-switch clip ${keepAlive.paused ? 'not playing' : 'playing'}` : 'not iOS',
+    audio.muted ? 'MUTED' : `volume ${audio.volume}/4`,
+  ];
+  return bits.join(' · ');
+}
 function syncSwitches() {
   document.querySelectorAll('#switches input[data-id]').forEach(cb => { cb.checked = app.on.has(cb.dataset.id); });
   $('#mute').checked = audio.muted;
+  $('#audiostatus').textContent = audioReport();
 }
 
 /* =============================================================================
@@ -732,6 +776,76 @@ register({
     const paint = () => squares.forEach((b, i) => b.classList.toggle('lit', i < audio.volume));
     on('volume', paint);
     paint();
+  },
+});
+
+// ---- Microphone: noise makes them spin ---------------------------------------------------------
+register({
+  id: 'mic', controls: true,
+  title: 'Microphone', desc: 'tap 🎤 Listen: make a noise and they spin, go quiet for a second and they stop. Needs mic permission. If the beat keeps them spinning, turn the volume down.',
+  css: `.micbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .6rem 1rem; flex-basis: 100%; }
+        .meter { position: relative; flex: 1 1 140px; max-width: 280px; height: 18px; background: #fff; border: 3px solid var(--ink); border-radius: 99px; overflow: hidden; }
+        .meter i { display: block; height: 100%; width: 0; background: #2a9d8f; }
+        .meter b { position: absolute; top: 0; bottom: 0; width: 3px; left: 0; background: var(--hot); }
+        .sens { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }
+        .mic-note { flex-basis: 100%; text-align: center; font-size: .9rem; opacity: .75; }`,
+  enable({ app, ui, onDispose }) {
+    let stream = null, source = null, raf = 0, disposed = false;
+    const note = ui(el('div', { className: 'mic-note' }));
+    const btn = ui(el('button', { className: 'btn', textContent: '🎤 Listen', onclick: () => stream ? stop() : start() }));
+    const bar = el('i'), mark = el('b');
+    const slider = el('input', { type: 'range', min: 1, max: 100, value: 65 });
+    const panel = ui(el('div', { className: 'micbar', hidden: true },
+      el('div', { className: 'meter' }, bar, mark), el('label', { className: 'sens' }, 'Sensitivity', slider)));
+
+    function stop() {
+      cancelAnimationFrame(raf);
+      source?.disconnect();
+      stream?.getTracks().forEach(t => t.stop());
+      stream = source = null;
+      btn.textContent = '🎤 Listen';
+      panel.hidden = true;
+      audioSessionType('playback');
+      if (!disposed) { note.textContent = ''; app.setSpin(true); }
+    }
+
+    async function start() {
+      ensureAudio();                                           // inside the tap, so iOS lets us use audio
+      if (!navigator.mediaDevices?.getUserMedia) { note.textContent = '🎤 No mic here (the page needs https).'; return; }
+      let s;
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: false, autoGainControl: false } }); }
+      catch (err) { note.textContent = `🎤 No mic access (${err.name}). Say yes to the permission prompt.`; return; }
+      if (disposed) return s.getTracks().forEach(t => t.stop());
+      await audio.ctx.resume?.();
+      stream = s;
+      const analyser = audio.ctx.createAnalyser();             // listens only; never wired to the speakers
+      analyser.fftSize = 1024;
+      source = audio.ctx.createMediaStreamSource(stream);
+      source.connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+
+      note.textContent = '🎤 Listening: make some noise!';
+      btn.textContent = '🛑 Stop listening';
+      panel.hidden = false;
+      app.setSpin(false);
+
+      let floor = 0, lastLoud = 0;
+      const loop = () => {
+        analyser.getByteTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((sum, v) => sum + ((v - 128) / 128) ** 2, 0) / buf.length);
+        // the room's own hum counts as "quiet": need to beat both the slider and 2.5x the usual hum
+        const threshold = Math.max(0.01 + 0.15 * (1 - slider.value / 100), floor * 2.5);
+        if (rms < threshold) floor += (rms - floor) * 0.02;
+        bar.style.width = Math.min(100, rms * 400) + '%';
+        mark.style.left = Math.min(100, threshold * 400) + '%';
+        const now = performance.now();
+        if (rms > threshold) { lastLoud = now; if (!app.spin.every(Boolean)) app.setSpin(true); }
+        else if (now - lastLoud > 1000 && app.spin.some(Boolean)) app.setSpin(false);
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+    onDispose(() => { disposed = true; stop(); });
   },
 });
 

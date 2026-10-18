@@ -15,15 +15,19 @@ Title, animation, then visual tiles (lit = active, dimmed = not), descriptions, 
 | Beat | Tune · Together · Gallop · Scale |
 | Sound | Beep · Toot · Ding · Ooo! · Aah! · Animals (frog / monkey / pig / dog noises) |
 
-Also: tap a figure to stop/start it, **hold** it to spin faster, 🔔 bell and 🥁 drum buttons, and four volume squares (tap the last lit square again to go quieter, down to mute).
+Also: tap a figure to stop/start it, **hold** it to spin faster, 🔔 bell and 🥁 drum buttons, four volume squares (tap the last lit square again to go quieter, down to mute), and a 🎤 **Listen** button: make a noise and they spin, go quiet and they stop (worked on iOS Safari; not on Android Chrome so far).
 
 Sound is always on. Phones need one tap before they allow audio, so a big yellow button asks for it; any tap works.
+
+### iPhone / iPad sound
+
+iOS mutes Web Audio when the ringer (silent) switch is on. The page works around that two ways: `navigator.audioSession = 'playback'` (iOS 16.4+) and a looping near-silent clip started on the first tap (older iOS; paused when the tab is hidden). If it's still silent, open the bottom panel: **🔔 Test sound** plays a bell and the line under it reports the audio state, session type and whether the clip is playing. Send that line over and it pinpoints the problem.
 
 ## When something breaks
 
 Open the panel at the bottom and untick the feature. The page remembers it in the URL, so the link can be shared with the feature already off:
 
-`?off=hold,backgrounds` (ids: `round animal image tap hold backgrounds patterns voices animalsounds instruments volume`)
+`?off=hold,backgrounds` (ids: `round animal image tap hold backgrounds patterns voices animalsounds instruments volume mic`)
 
 "Turn everything back on & reset" undoes it all. There's also a **Mute all sound** switch there.
 
@@ -33,7 +37,7 @@ No photos in this repo, ever (`.gitignore` blocks common image types as a safety
 
 ## Versioning
 
-Semver. `1.0.0` is the first release. Earlier `0.x` builds (including the mic and shake levels, removed in 1.0.0) are in git history.
+Semver. `1.0.0` is the first release. Earlier `0.x` builds (including the shake level, removed in 1.0.0) are in git history.
 
 ## Working on it
 
