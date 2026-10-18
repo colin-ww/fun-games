@@ -582,6 +582,60 @@ register({
   },
 });
 
+// ---- Hold a figure to spin it faster -------------------------------------------------------
+register({
+  id: 'hold',
+  title: 'Hold', desc: 'press and hold a figure and it spins faster and faster. Let go and it slows down again.',
+  enable({ app, on, onDispose }) {
+    const MAX = 6, rate = Array(FIGURES).fill(1), holding = Array(FIGURES).fill(false);
+    let raf = 0, last = 0;
+    const loop = now => {
+      const dt = Math.min(0.05, (now - last) / 1000);
+      last = now;
+      let busy = false;
+      rate.forEach((r, i) => {
+        const target = holding[i] ? MAX : 1, step = (holding[i] ? 4 : 6) * dt;
+        rate[i] = r < target ? Math.min(target, r + step) : Math.max(target, r - step);
+        if (app.anims[i]) app.anims[i].playbackRate = rate[i];
+        if (rate[i] !== target) busy = true;
+      });
+      raf = busy ? requestAnimationFrame(loop) : 0;
+    };
+    const kick = () => { if (!raf) { last = performance.now(); raf = requestAnimationFrame(loop); } };
+    on('holdstart', i => { holding[i] = true; rate[i] = Math.max(rate[i], 2); app.setSpin(true, i); kick(); });
+    on('holdend', i => { holding[i] = false; kick(); });
+    onDispose(() => { cancelAnimationFrame(raf); app.anims.forEach(a => { a.playbackRate = 1; }); });
+  },
+});
+
+// ---- Backgrounds (pick one, or let them cycle) ---------------------------------------------------
+{
+  const IDS = ['sky', 'space', 'disco'];
+  register({
+    id: 'backgrounds',
+    title: 'Backgrounds', desc: 'sky, space or disco behind the figures. 🔁 Cycle flips through them every few seconds.',
+    css: `#stage.bg-sky { background: radial-gradient(circle at 88% 14%, #ffe066 0 7%, transparent 7.5%), linear-gradient(#7ec8ff 0 62%, #8fdc6a 62%); }
+          #stage.bg-space { background: radial-gradient(2.5px 2.5px at 12% 20%, #fff, transparent), radial-gradient(3px 3px at 70% 30%, #fff, transparent),
+            radial-gradient(2.5px 2.5px at 40% 75%, #fff, transparent), radial-gradient(3px 3px at 85% 80%, #fff, transparent),
+            radial-gradient(2px 2px at 25% 55%, #fff, transparent), radial-gradient(2.5px 2.5px at 60% 10%, #fff, transparent),
+            linear-gradient(#0b1030, #1b1464); }
+          #stage.bg-disco { background: linear-gradient(120deg, #ff4d6d, #ffd166, #06d6a0, #118ab2, #9b5de5, #ff4d6d); background-size: 300% 300%; animation: disco 5s linear infinite; }
+          @keyframes disco { to { background-position: 300% 0; } }`,
+    tiles: [
+      { group: 'bg', id: 'sky', label: 'Sky', icon: '☁️' },
+      { group: 'bg', id: 'space', label: 'Space', icon: '🌌' },
+      { group: 'bg', id: 'disco', label: 'Disco', icon: '🪩' },
+      { group: 'bg', id: 'cycle', label: 'Cycle', icon: '🔁', toggle: true },
+    ],
+    enable: ({ app, every }) => every(6000, () => {
+      if (!app.flags.cycle) return;
+      app.choice.bg = IDS[(IDS.indexOf(app.get('bg')) + 1) % IDS.length];
+      app.refreshTiles();
+      app.applyBg();
+    }),
+  });
+}
+
 // ---- Beat patterns ----------------------------------------------------------------
 {
   const GALLOP = [0, 0, 1, null, 2, 2, 3, null];
