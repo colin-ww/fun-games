@@ -209,19 +209,72 @@ const audio = { ctx: null, master: null, volume: 3, muted: false };
 const VOICES = {};                                              // name -> (a, t, freq, figure); features add more
 const PATTERNS = {};                                            // name -> step -> [{ fig, note }]
 
-const tone = (a, t, type, freq, peak, attack, dur) => {
-  const o = a.ctx.createOscillator(), g = a.ctx.createGain();
-  o.type = type;
-  o.frequency.setValueAtTime(freq, t);
+/* tiny synth kit: every voice below is built from these */
+const filter = (a, type, freq, q = 1) => {
+  const f = a.ctx.createBiquadFilter();
+  f.type = type; f.frequency.value = freq; f.Q.value = q;
+  return f;
+};
+const envelope = (a, t, peak, attack, dur, hold = 0) => {         // hold = fraction of dur to stay at peak
+  const g = a.ctx.createGain();
   g.gain.setValueAtTime(0.0001, t);
   g.gain.exponentialRampToValueAtTime(peak, t + attack);
+  if (hold) g.gain.setValueAtTime(peak, t + dur * hold);
   g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-  o.connect(g).connect(a.out);
+  return g;
+};
+const tone = (a, t, type, freq, peak, attack, dur) => {
+  const o = a.ctx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(freq, t);
+  o.connect(envelope(a, t, peak, attack, dur)).connect(a.out);
   o.start(t);
   o.stop(t + dur + 0.05);
 };
+/* gliding buzzy oscillator; flutter = amplitude chopping (the rude/gruff part) */
+const buzz = (a, t, { path, dur, type = 'sawtooth', flutter = 0, filt, peak = 0.6, attack = 0.015, hold = 0 }) => {
+  const c = a.ctx, o = c.createOscillator(), stops = [o];
+  o.type = type;
+  o.frequency.setValueAtTime(path[0][1], t);
+  path.slice(1).forEach(([dt, hz]) => o.frequency.exponentialRampToValueAtTime(hz, t + dt));
+  let node = o;
+  if (flutter) {
+    const am = c.createGain(), lfo = c.createOscillator(), depth = c.createGain();
+    am.gain.value = 0.5; depth.gain.value = 0.5;
+    lfo.type = 'square'; lfo.frequency.value = flutter;
+    lfo.connect(depth).connect(am.gain);
+    node = node.connect(am);
+    stops.push(lfo);
+  }
+  if (filt) node = node.connect(filter(a, ...filt));
+  node.connect(envelope(a, t, peak, attack, dur, hold)).connect(a.out);
+  stops.forEach(s => { s.start(t); s.stop(t + dur + 0.05); });
+};
+/* sung vowel: sawtooth through two formant filters, with a little vibrato */
+const vowel = (a, t, f0, formants, dur = 0.3, peak = 0.7) => {
+  const c = a.ctx, o = c.createOscillator(), vib = c.createOscillator(), depth = c.createGain();
+  o.type = 'sawtooth'; o.frequency.value = f0;
+  vib.frequency.value = 5.5; depth.gain.value = f0 * 0.015;
+  vib.connect(depth).connect(o.frequency);
+  const out = envelope(a, t, peak, 0.04, dur, 0.5);
+  out.connect(a.out);
+  formants.forEach((hz, k) => {
+    const fg = c.createGain();
+    fg.gain.value = [4, 2.5][k] ?? 2;
+    o.connect(filter(a, 'bandpass', hz, 8)).connect(fg).connect(out);
+  });
+  [o, vib].forEach(s => { s.start(t); s.stop(t + dur + 0.05); });
+};
+const noise = (a, t, dur, freq, peak) => {
+  const c = a.ctx, buf = c.createBuffer(1, Math.ceil(c.sampleRate * dur), c.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+  const s = c.createBufferSource();
+  s.buffer = buf;
+  s.connect(filter(a, 'bandpass', freq, 1)).connect(envelope(a, t, peak, 0.005, dur)).connect(a.out);
+  s.start(t);
+};
 
-VOICES.beep = (a, t, f) => tone(a, t, 'triangle', f, 0.3, 0.01, 0.18);
+VOICES.beep = (a, t, f) => tone(a, t, 'triangle', f, 0.8, 0.01, 0.18);
 
 {
   const TUNE = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 4, 3, 2, 1, 0, 0];
@@ -249,6 +302,10 @@ function ensureAudio() {
 app.playVoice = (name, t, freq, fig) => {
   try { (VOICES[name] ?? VOICES.beep)({ ctx: audio.ctx, out: audio.master }, t, freq, fig); }
   catch (err) { console.error(`voice ${name} failed`, err); }
+};
+app.preview = (name, fig = Math.floor(Math.random() * FIGURES)) => {      // one sample note, for tapping a tile
+  ensureAudio();
+  app.playVoice(name, audio.ctx.currentTime + 0.05, NOTES[2], fig);
 };
 
 /* lookahead scheduler: queue the next few beats on the audio clock */
@@ -524,6 +581,50 @@ register({
     ui(el('button', { className: 'btn', textContent: '⏹ All stop', onclick: () => app.setSpin(false) }));
   },
 });
+
+// ---- Beat patterns ----------------------------------------------------------------
+{
+  const GALLOP = [0, 0, 1, null, 2, 2, 3, null];
+  const LADDER = [0, 1, 2, 3, 4, 3, 2, 1];
+  PATTERNS.steady = n => n % 2 ? [] : [0, 1, 2, 3].map(fig => ({ fig, note: fig }));
+  PATTERNS.gallop = n => GALLOP[n % 8] === null ? [] : [{ fig: GALLOP[n % 8], note: GALLOP[n % 8] }];
+  PATTERNS.scale = n => [{ fig: n % FIGURES, note: LADDER[n % 8] }];
+
+  register({
+    id: 'patterns',
+    title: 'Beat patterns', desc: 'Tune = each figure plays its own beat. Together = everyone at once. Gallop = da-da-DUM. Scale = up and down the stairs.',
+    tiles: [
+      { group: 'beat', id: 'tune', label: 'Tune', icon: '🎵' },
+      { group: 'beat', id: 'steady', label: 'Together', icon: '👯' },
+      { group: 'beat', id: 'gallop', label: 'Gallop', icon: '🐎' },
+      { group: 'beat', id: 'scale', label: 'Scale', icon: '🪜' },
+    ],
+  });
+}
+
+// ---- Sound voices -------------------------------------------------------------------
+{
+  VOICES.ding = (a, t, f) => [1, 2.76, 5.4].forEach((m, k) => tone(a, t, 'sine', f * m, [0.45, 0.22, 0.1][k], 0.004, [0.7, 0.45, 0.25][k]));
+  VOICES.toot = (a, t, f) => {
+    const base = 100 + (f - 520) / 6;                              // a different low note per beat
+    buzz(a, t, { path: [[0, base * 1.5], [0.32, base * 0.7]], dur: 0.32, flutter: 34, filt: ['lowpass', 700, 1], peak: 0.55, hold: 0.6 });
+  };
+  VOICES.ooo = (a, t, f) => vowel(a, t, f / 2, [300, 870], 0.3, 0.25);
+  VOICES.aah = (a, t, f) => vowel(a, t, f / 2, [800, 1150], 0.3, 0.45);
+
+  register({
+    id: 'voices',
+    title: 'Beat sounds', desc: 'beep, toot (a rude one), ding, "ooo!" or "aah!". Tap a tile to hear a sample.',
+    tiles: [
+      { group: 'voice', id: 'beep', label: 'Beep', icon: '🤖' },
+      { group: 'voice', id: 'toot', label: 'Toot', icon: '💨' },
+      { group: 'voice', id: 'ding', label: 'Ding', icon: '🔔' },
+      { group: 'voice', id: 'ooo', label: 'Ooo!', icon: '😗' },
+      { group: 'voice', id: 'aah', label: 'Aah!', icon: '😮' },
+    ],
+    enable: ({ on }) => on('choose', t => { if (t.group === 'voice') app.preview(t.id); }),
+  });
+}
 
 // ===== FEATURES ABOVE THIS LINE =====
 
