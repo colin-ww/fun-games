@@ -112,8 +112,8 @@ const COLORS = ['#e63946', '#2a9d8f', '#e9a100', '#6a4c93'];
 const GROUPS = [
   { id: 'look', title: 'Look', default: 'round' },
   { id: 'bg', title: 'Background', default: 'sky' },
-  { id: 'beat', title: 'Beat', default: 'tune' },
-  { id: 'voice', title: 'Sound', default: 'beep' },
+  { id: 'beat', title: 'Beat', default: 'tune', builtin: true },       // builtin: works even with its tiles switched off
+  { id: 'voice', title: 'Sound', default: 'beep', builtin: true },
 ];
 
 const FEATURES = [];
@@ -138,8 +138,8 @@ const tiles = () => FEATURES.filter(f => app.on.has(f.id)).flatMap(f => (f.tiles
 /* the picked option of a group; falls back if its feature was switched off */
 app.get = group => {
   const ids = tiles().filter(t => t.group === group && !t.toggle).map(t => t.id);
-  const dflt = GROUPS.find(g => g.id === group).default;
-  return ids.includes(app.choice[group]) ? app.choice[group] : ids.includes(dflt) ? dflt : (ids[0] ?? dflt);
+  const { default: dflt, builtin } = GROUPS.find(g => g.id === group);
+  return ids.includes(app.choice[group]) ? app.choice[group] : (builtin || ids.includes(dflt)) ? dflt : (ids[0] ?? dflt);
 };
 
 app.setSpin = (value, i) => {                      // i omitted => all figures
