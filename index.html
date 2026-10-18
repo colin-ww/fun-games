@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spin Party</title>
+<style>
+  :root { --bg: #fff8e7; --ink: #2b2d42; --card: #fff; --line: #e6dcc0; }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--bg); color: var(--ink); font: 16px/1.4 system-ui, sans-serif;
+    display: flex; flex-direction: column; min-height: 100vh; min-height: 100dvh;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem 1rem; padding: .6rem 1rem 0; }
+  header h1 { font-size: 1.25rem; margin: 0; flex: 1; }
+  .badge { font-size: .8rem; background: var(--card); border: 1px solid var(--line); border-radius: 99px; padding: .15rem .65rem; }
+
+  #options { margin: .5rem 1rem 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: .5rem .75rem; }
+  #options summary { cursor: pointer; font-weight: 600; min-height: 32px; }
+  #options select { font: inherit; padding: .35rem .5rem; margin: .5rem 0; }
+  #options label.feat { display: flex; gap: .6rem; align-items: flex-start; padding: .4rem 0; border-top: 1px solid var(--line); }
+  #options label.feat input { width: 1.3rem; height: 1.3rem; margin-top: .15rem; flex: none; }
+  #options small { display: block; opacity: .7; }
+
+  #stage { flex: 1; display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem; align-content: center; padding: 1rem; max-width: 1000px; width: 100%; margin: 0 auto; }
+  @media (min-width: 700px) { #stage { grid-template-columns: repeat(4, 1fr); } }
+  .fig { position: relative; aspect-ratio: 1; transition: opacity .4s, transform .4s; user-select: none; -webkit-user-select: none; }
+  .fig.gone { opacity: 0; transform: scale(.2); pointer-events: none; }
+  .spinner { width: 100%; height: 100%; animation: spin var(--dur, 1.4s) linear infinite; animation-play-state: paused; }
+  .spinner.on { animation-play-state: running; }
+  .spinner svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: .6rem; padding: .5rem 1rem calc(.9rem + env(safe-area-inset-bottom)); }
+  #toolbar button, #toolbar .big {
+    min-height: 56px; min-width: 56px; font: inherit; font-size: 1.1rem; font-weight: 600; color: var(--ink);
+    background: var(--card); border: 2px solid var(--ink); border-radius: 14px; padding: 0 1.1rem; cursor: pointer;
+  }
+  #toolbar button:active { transform: translateY(2px); }
+  #toolbar .note { flex-basis: 100%; text-align: center; font-size: .9rem; opacity: .75; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🌀 Spin Party</h1>
+  <span class="badge" id="status"></span>
+</header>
+<details id="options">
+  <summary>⚙️ Versions &amp; options</summary>
+  <div>
+    <label>Version
+      <select id="version"></select>
+    </label>
+    <div id="features"></div>
+  </div>
+</details>
+<main id="stage" aria-label="Spinning figures"></main>
+<div id="toolbar"></div>
+<noscript>This page needs JavaScript.</noscript>
+
+<script>
+'use strict';
+
+/* =============================================================================
+   CORE  –  tiny feature registry. Every "level" below is one self-contained
+   register({...}) block: it can be toggled on/off live, selected by version
+   (?v=0.3.0), or cherry-picked (?v=0.3.0&f=spin,sound). To revert a level,
+   delete its block (or its git commit).
+   ============================================================================= */
+
+const $ = (sel, root = document) => root.querySelector(sel);
+const el = (tag, props = {}, ...kids) => {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...kids);
+  return e;
+};
+
+const FIGURES = 4;
+const DURATIONS = [1.4, 1.1, 1.7, 1.25];          // seconds per turn, per figure
+const COLORS = ['#e63946', '#2a9d8f', '#e9a100', '#6a4c93'];
+
+const FEATURES = [];
+const register = f => FEATURES.push(f);
+
+const semver = v => v.split('.').map(Number);
+const cmp = (a, b) => { const [x, y] = [semver(a), semver(b)]; return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]; };
+
+const app = {
+  on: new Set(),
+  spin: Array(FIGURES).fill(true),
+  gone: Array(FIGURES).fill(false),
+  stage: $('#stage'),
+  toolbar: $('#toolbar'),
+  headPhoto: () => null,                           // photo level overrides this
+};
+
+/* photo head helper shared by the people skins */
+const photoHead = (i, url, cx, cy, r, stroke) => `
+  <clipPath id="clip${i}"><circle cx="${cx}" cy="${cy}" r="${r}"/></clipPath>
+  <image href="${url}" x="${cx - r}" y="${cy - r}" width="${2 * r}" height="${2 * r}"
+         preserveAspectRatio="xMidYMid slice" clip-path="url(#clip${i})"/>
+  <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="${stroke}" stroke-width="2.5"/>`;
+
+app.setSpin = (value, i) => {                      // i omitted => all figures
+  app.spin = app.spin.map((s, j) => (i === undefined || i === j) ? value : s);
+  app.sync();
+};
+app.toggleSpin = i => app.setSpin(!app.spin[i], i);
+
+app.sync = () => {
+  // with no control level enabled, nothing can stop the figures: keep them going
+  if (!FEATURES.some(f => f.controls && app.on.has(f.id))) app.spin.fill(true);
+  app.stage.querySelectorAll('.fig').forEach((fig, i) => {
+    $('.spinner', fig).classList.toggle('on', app.spin[i]);
+    fig.classList.toggle('gone', app.gone[i]);
+  });
+};
+
+app.render = () => {
+  // last enabled skin wins; a figure that has a photo needs a skin that can show one
+  const skins = FEATURES.filter(f => f.skin && app.on.has(f.id)).map(f => f.skin).reverse();
+  const skinFor = i => (app.headPhoto(i) && skins.find(s => s.photoCapable)) || skins[0];
+  app.stage.replaceChildren(...Array.from({ length: FIGURES }, (_, i) => {
+    const spinner = el('div', { className: 'spinner' });
+    spinner.style.setProperty('--dur', DURATIONS[i] + 's');
+    spinner.innerHTML = `<svg viewBox="0 0 100 100" aria-hidden="true">${skinFor(i).draw(i, app.headPhoto(i))}</svg>`;
+    const fig = el('div', { className: 'fig' }, spinner);
+    fig.dataset.i = i;
+    return fig;
+  }));
+  FEATURES.filter(f => f.decorate && app.on.has(f.id))
+    .forEach(f => app.stage.querySelectorAll('.fig').forEach((fig, i) => f.decorate(fig, i, app)));
+  app.sync();
+};
+
+function enableFeature(f) {
+  app.on.add(f.id);
+  f.disposers = [];
+  if (f.css) {
+    const style = el('style', { textContent: f.css });
+    document.head.append(style);
+    f.disposers.push(() => style.remove());
+  }
+  const ctx = {
+    app,
+    ui: node => { app.toolbar.append(node); f.disposers.push(() => node.remove()); return node; },
+    listen: (target, type, fn, opts) => { target.addEventListener(type, fn, opts); f.disposers.push(() => target.removeEventListener(type, fn, opts)); },
+    every: (ms, fn) => { const t = setInterval(fn, ms); f.disposers.push(() => clearInterval(t)); },
+    onDispose: fn => f.disposers.push(fn),
+  };
+  try { f.enable?.(ctx); } catch (err) { console.error(`feature ${f.id} failed`, err); }
+}
+
+function disableFeature(f) {
+  f.disposers.reverse().forEach(d => { try { d(); } catch (err) { console.error(err); } });
+  f.disposers = [];
+  app.on.delete(f.id);
+}
+
+function applyFeatures(ids) {
+  const want = new Set([...ids, ...FEATURES.filter(f => f.locked).map(f => f.id)]);
+  FEATURES.filter(f => app.on.has(f.id) && !want.has(f.id)).forEach(disableFeature);
+  FEATURES.filter(f => !app.on.has(f.id) && want.has(f.id)).forEach(enableFeature);
+  app.render();
+  syncUrl();
+  syncPanel();
+}
+
+/* ---- versions, URL, options panel ------------------------------------------ */
+
+let version, custom = false;                       // custom = checkboxes changed away from the version preset
+let VERSIONS, LATEST;
+const preset = v => FEATURES.filter(f => cmp(f.since, v) <= 0).map(f => f.id);
+
+function syncUrl() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.set('v', version);
+    custom ? u.searchParams.set('f', [...app.on].join(',')) : u.searchParams.delete('f');
+    history.replaceState(null, '', u);
+  } catch { /* e.g. sandboxed preview: URL stays as is */ }
+}
+
+function syncPanel() {
+  $('#version').value = version;
+  $('#status').textContent = `showing v${version}${custom ? ' + tweaks' : ''} · build v${LATEST}`;
+  document.querySelectorAll('#features input').forEach(cb => { cb.checked = app.on.has(cb.dataset.id); });
+}
+
+function buildPanel() {
+  $('#version').replaceChildren(...VERSIONS.map(v => el('option', { value: v, textContent: `v${v}` + (v === LATEST ? ' (latest)' : '') })));
+  $('#version').onchange = e => { version = e.target.value; custom = false; applyFeatures(preset(version)); };
+  $('#features').replaceChildren(...FEATURES.map(f => {
+    const cb = el('input', { type: 'checkbox', disabled: !!f.locked });
+    cb.dataset.id = f.id;
+    cb.onchange = () => {
+      custom = true;
+      applyFeatures(FEATURES.filter(g => (g.id === f.id ? cb.checked : app.on.has(g.id))).map(g => g.id));
+    };
+    return el('label', { className: 'feat' }, cb, el('span', {},
+      `Level ${f.level} · ${f.title} `, el('small', { textContent: `v${f.since} — ${f.desc}` })));
+  }));
+}
+
+/* =============================================================================
+   FEATURES  –  one block per level, in the order they were built
+   ============================================================================= */
+
+// ---- Level 1 · spinning stick figures (v0.1.0) ------------------------------
+{
+  // [left hand, right hand] – each figure holds its arms differently so the spin is visible
+  const ARMS = [[[28, 20], [72, 54]], [[26, 54], [74, 20]], [[30, 18], [70, 18]], [[28, 56], [72, 52]]];
+
+  register({
+    id: 'spin', level: 1, since: '0.1.0', locked: true,
+    title: 'Spinning stick figures',
+    desc: '4 stick figures spinning on the spot, looping forever.',
+    skin: {
+      photoCapable: true,
+      draw(i, photo) {
+        const c = COLORS[i], [[lx, ly], [rx, ry]] = ARMS[i];
+        const head = photo
+          ? photoHead(i, photo, 50, 20, 15, c)
+          : `<circle cx="50" cy="20" r="11" fill="#fff" stroke="${c}" stroke-width="4"/>
+             <circle cx="54" cy="17" r="1.8" fill="${c}" stroke="none"/>
+             <path d="M61 19l6 3-6 2z" fill="${c}"/>
+             <path d="M45 24q5 4 10 0"/>`;
+        return `<g stroke="${c}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+          <path d="M50 31V62M50 40L${lx} ${ly}M50 40L${rx} ${ry}M50 62L38 92M50 62L62 92"/>
+          ${head}
+        </g>`;
+      },
+    },
+  });
+}
+
+// ---- Level 2 · beep beep tune (v0.2.0) ---------------------------------------
+{
+  const NOTES = [523.25, 587.33, 659.25, 783.99, 880];          // C D E G A (pentatonic: can't sound bad)
+  const TUNE = [0, 1, 2, 3, 2, 1, 0, 1, 2, 3, 4, 3, 2, 1, 0, 0];
+
+  register({
+    id: 'sound', level: 2, since: '0.2.0',
+    title: 'Beep beep tune',
+    desc: 'Each spinning figure plays its own beat of a little tune. Needs one tap to start (phone rule).',
+    css: `#toolbar .big.pulse { animation: pulse 1s ease-in-out infinite; background: #ffe066; }
+          @keyframes pulse { 50% { transform: scale(1.06); } }`,
+    enable({ app, ui, listen, every, onDispose }) {
+      let audio = null, muted = false, step = 0;
+      const running = () => audio?.state === 'running';
+
+      const label = () => {
+        btn.textContent = !running() ? '▶ Start sound' : muted ? '🔇 Sound off' : '🔊 Sound on';
+        btn.classList.toggle('pulse', !running());
+      };
+      const unlock = () => {
+        audio ??= new (window.AudioContext || window.webkitAudioContext)();
+        audio.onstatechange = label;
+        audio.resume?.().then(label);
+      };
+      const btn = ui(el('button', {
+        className: 'big',
+        onclick: () => { if (!running()) unlock(); else { muted = !muted; label(); } },
+      }));
+      label();
+      listen(document, 'click', () => { if (!running()) unlock(); });      // any tap unlocks audio
+      listen(document, 'touchend', () => { if (!running()) unlock(); });
+
+      const beep = freq => {
+        const t = audio.currentTime, osc = audio.createOscillator(), gain = audio.createGain();
+        osc.type = 'triangle';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(0.25, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+        osc.connect(gain).connect(audio.destination);
+        osc.start(t);
+        osc.stop(t + 0.2);
+      };
+
+      // figure (step % 4) plays on its own step: 4 spinning = full tune, fewer = gaps
+      every(230, () => {
+        const n = step++;
+        if (running() && !muted && app.spin[n % FIGURES]) beep(NOTES[TUNE[n % TUNE.length]]);
+      });
+      onDispose(() => audio?.close());
+    },
+  });
+}
+
+// ---- Level 3 · rounder, friendlier figures (v0.3.0) ---------------------------
+{
+  const SKIN = '#ffd6a5', INK = '#2b2d42';
+  const ARMS = [[[20, 40], [80, 62]], [[18, 64], [82, 38]], [[22, 38], [78, 38]], [[20, 66], [80, 64]]];
+  const HAIR = ['#5a3825', '#222', '#c9892b', '#7a2e2e'];
+  // one silly accessory each: party hat, ponytail, spiky hair, bow
+  const ACCESSORY = [
+    c => `<polygon points="41,17 50,1 59,17" fill="${c}"/><circle cx="50" cy="2.5" r="2.5" fill="#fff"/>`,
+    c => `<path d="M35 28a15 15 0 0 1 30 0q-15-9-30 0z" fill="${HAIR[1]}"/><circle cx="68" cy="22" r="6" fill="${HAIR[1]}"/><circle cx="64" cy="24" r="2" fill="${c}"/>`,
+    () => `<polygon points="36,24 38,10 44,17 50,7 56,17 62,10 64,24" fill="${HAIR[2]}"/>`,
+    c => `<polygon points="53,15 44,9 44,21" fill="${c}"/><polygon points="53,15 62,9 62,21" fill="${c}"/><circle cx="53" cy="15" r="2.2" fill="#fff"/>`,
+  ];
+
+  register({
+    id: 'round', level: 3, since: '0.3.0',
+    title: 'Rounder, friendlier figures',
+    desc: 'Colourful bodies, faces and silly hats instead of sticks.',
+    skin: {
+      photoCapable: true,
+      draw(i, photo) {
+        const c = COLORS[i], [[lx, ly], [rx, ry]] = ARMS[i];
+        const face = photo
+          ? photoHead(i, photo, 50, 29, 16, INK)
+          : `<circle cx="50" cy="29" r="15" fill="${SKIN}" stroke="${INK}" stroke-width="2"/>
+             <circle cx="45" cy="27" r="2" fill="${INK}"/><circle cx="55" cy="27" r="2" fill="${INK}"/>
+             <circle cx="41" cy="33" r="2.6" fill="#ffadad"/><circle cx="59" cy="33" r="2.6" fill="#ffadad"/>
+             <path d="M44 34q6 5 12 0" fill="none" stroke="${INK}" stroke-width="2" stroke-linecap="round"/>`;
+        return `
+          <g stroke="${c}" stroke-width="8" stroke-linecap="round">
+            <path d="M38 56L${lx} ${ly}M62 56L${rx} ${ry}"/>
+            <path stroke="${INK}" d="M43 80L41 93M57 80L59 93"/>
+          </g>
+          <circle cx="${lx}" cy="${ly}" r="6" fill="${SKIN}"/><circle cx="${rx}" cy="${ry}" r="6" fill="${SKIN}"/>
+          <ellipse cx="40" cy="95" rx="7" ry="3.5" fill="${c}"/><ellipse cx="60" cy="95" rx="7" ry="3.5" fill="${c}"/>
+          <ellipse cx="50" cy="64" rx="16" ry="18" fill="${c}"/>
+          ${face}
+          ${ACCESSORY[i](c)}`;
+      },
+    },
+  });
+}
+
+// ---- Level 5 · tap a figure to start/stop it (v0.4.0) -------------------------
+register({
+  id: 'tap', level: 5, since: '0.4.0', controls: true,
+  title: 'Tap to start/stop',
+  desc: 'Tap a figure to freeze or free it. Plus start-all / stop-all buttons.',
+  css: `.fig { cursor: pointer; }`,
+  enable({ app, ui, listen }) {
+    listen(app.stage, 'click', e => {
+      const fig = e.target.closest('.fig');
+      if (fig && !e.target.closest('.cam')) app.toggleSpin(+fig.dataset.i);
+    });
+    ui(el('button', { textContent: '▶ All spin', onclick: () => app.setSpin(true) }));
+    ui(el('button', { textContent: '⏹ All stop', onclick: () => app.setSpin(false) }));
+  },
+  decorate: fig => fig.setAttribute('role', 'button'),
+});
+
+// ---- Level 7 · animals instead of people (v0.5.0) -----------------------------
+{
+  const ANIMALS = ['🐸', '🐵', '🐷', '🐶'];
+
+  register({
+    id: 'animals', level: 7, since: '0.5.0',
+    title: 'Animals instead of people',
+    desc: 'Frog, monkey, pig and dog take over. Overrides the people skins.',
+    skin: {
+      draw: i => `<text x="50" y="54" font-size="76" text-anchor="middle" dominant-baseline="central">${ANIMALS[i]}</text>`,
+    },
+  });
+}
+
+// ---- Level 4 · real faces as heads (v0.6.0) -----------------------------------
+{
+  const photos = Array(FIGURES).fill(null);        // in memory only: never uploaded, never saved
+
+  // centre-crop to a 256px square; createImageBitmap also applies the phone's EXIF rotation
+  const toSquare = async file => {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }).catch(() => createImageBitmap(file));
+    const side = Math.min(bmp.width, bmp.height), size = 256;
+    const canvas = el('canvas', { width: size, height: size });
+    canvas.getContext('2d').drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, size, size);
+    bmp.close?.();
+    return canvas.toDataURL('image/jpeg', 0.85);
+  };
+
+  register({
+    id: 'photo', level: 4, since: '0.6.0',
+    title: 'Real faces as heads',
+    desc: 'Tap 📷 on a figure to pick a photo for its head (beats animals). Stays on the device, never uploaded.',
+    css: `.cam { position: absolute; right: 2px; bottom: 2px; width: 44px; height: 44px; display: grid; place-items: center;
+                 border-radius: 50%; background: #fff; border: 2px solid var(--ink); font-size: 1.3rem; cursor: pointer; }
+          .cam input { display: none; }`,
+    enable({ app, ui, onDispose }) {
+      app.headPhoto = i => photos[i];
+      onDispose(() => { app.headPhoto = () => null; });
+      ui(el('button', { textContent: '🧹 Clear photos', onclick: () => { photos.fill(null); app.render(); } }));
+      ui(el('span', { className: 'note', textContent: '📷 Photos stay on this device — nothing is uploaded.' }));
+    },
+    decorate(fig, i, app) {
+      const input = el('input', { type: 'file', accept: 'image/*' });
+      input.onchange = async () => {
+        const file = input.files[0];
+        if (!file) return;
+        photos[i] = await toSquare(file);
+        app.render();
+      };
+      fig.append(el('label', { className: 'cam', title: 'Pick a photo', ariaLabel: 'Pick a photo for this figure' }, '📷', input));
+    },
+  });
+}
+
+// ---- Level 6 · noise makes them spin (v0.7.0) ---------------------------------
+register({
+  id: 'mic', level: 6, since: '0.7.0', controls: true,
+  title: 'Noise starts/stops the spin',
+  desc: 'Make a noise and they spin; go quiet for a second and they stop. Needs mic permission + HTTPS.',
+  css: `.meter { flex: 1 1 140px; max-width: 260px; height: 14px; background: #fff; border: 2px solid var(--ink); border-radius: 99px; overflow: hidden; }
+        .meter i { display: block; height: 100%; width: 0; background: #2a9d8f; }
+        .sens { display: flex; align-items: center; gap: .5rem; font-size: .9rem; }`,
+  enable({ app, ui, onDispose }) {
+    let stream = null, actx = null, raf = 0, disposed = false;
+    const note = ui(el('span', { className: 'note' }));
+    const bar = el('i');
+    const meter = ui(el('div', { className: 'meter', hidden: true }, bar));
+    const slider = el('input', { type: 'range', min: 1, max: 100, value: 60 });
+    const sens = ui(el('label', { className: 'sens', hidden: true }, 'Sensitivity', slider));
+    const btn = ui(el('button', { textContent: '🎤 Listen', onclick: () => stream ? stop() : start() }));
+
+    function stop() {
+      cancelAnimationFrame(raf);
+      stream?.getTracks().forEach(t => t.stop());
+      actx?.close();
+      stream = actx = null;
+      btn.textContent = '🎤 Listen';
+      meter.hidden = sens.hidden = true;
+    }
+
+    async function start() {
+      let s;
+      try { s = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+      catch { note.textContent = '🎤 No mic access — needs HTTPS and a "yes" to the permission prompt.'; return; }
+      if (disposed) return s.getTracks().forEach(t => t.stop());
+      stream = s;
+      actx = new (window.AudioContext || window.webkitAudioContext)();
+      await actx.resume();
+      const analyser = actx.createAnalyser();
+      analyser.fftSize = 1024;
+      actx.createMediaStreamSource(stream).connect(analyser);
+      const buf = new Uint8Array(analyser.fftSize);
+
+      note.textContent = '🎤 Listening — make some noise!';
+      btn.textContent = '🛑 Stop listening';
+      meter.hidden = sens.hidden = false;
+      app.setSpin(false);
+
+      let lastLoud = 0;
+      const loop = () => {
+        analyser.getByteTimeDomainData(buf);
+        const rms = Math.sqrt(buf.reduce((sum, v) => sum + ((v - 128) / 128) ** 2, 0) / buf.length);
+        bar.style.width = Math.min(100, rms * 500) + '%';
+        const threshold = 0.01 + 0.2 * (1 - slider.value / 100);      // higher slider = more sensitive
+        const now = performance.now();
+        if (rms > threshold) { lastLoud = now; if (!app.spin.every(Boolean)) app.setSpin(true); }
+        else if (now - lastLoud > 1000 && app.spin.some(Boolean)) app.setSpin(false);
+        raf = requestAnimationFrame(loop);
+      };
+      loop();
+    }
+    onDispose(() => { disposed = true; stop(); });
+  },
+});
+
+// ---- Level 8 · shake the phone (v0.8.0) ---------------------------------------
+register({
+  id: 'shake', level: 8, since: '0.8.0', controls: true,
+  title: 'Shake the phone',
+  desc: 'A shake toggles all spinning, or makes a random figure vanish/reappear. iOS asks permission. Desktop: press S.',
+  enable({ app, ui, listen, onDispose }) {
+    const note = ui(el('span', { className: 'note', textContent: '📳 On a computer, press S to "shake".' }));
+    const btn = ui(el('button', { textContent: '📳 Enable shake', onclick: arm }));
+
+    const shake = () => {
+      if (Math.random() < 0.65) app.setSpin(!app.spin.some(Boolean));
+      else { const i = Math.floor(Math.random() * FIGURES); app.gone[i] = !app.gone[i]; app.sync(); }
+    };
+    onDispose(() => { app.gone.fill(false); app.sync(); });
+    listen(window, 'keydown', e => {
+      if (e.key.toLowerCase() === 's' && !/input|select|textarea/i.test(e.target.tagName)) shake();
+    });
+
+    async function arm() {
+      if (typeof DeviceMotionEvent === 'undefined') { note.textContent = '📳 No motion sensor here — press S instead.'; return; }
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {          // iOS: must be asked from a tap
+        const answer = await DeviceMotionEvent.requestPermission().catch(() => 'denied');
+        if (answer !== 'granted') { note.textContent = '📳 Motion permission denied — press S instead.'; return; }
+      }
+      let last = null, cooldown = 0;
+      listen(window, 'devicemotion', e => {
+        const a = e.accelerationIncludingGravity;
+        if (!a) return;
+        const mag = Math.hypot(a.x ?? 0, a.y ?? 0, a.z ?? 0);
+        if (last !== null && Math.abs(mag - last) > 12 && performance.now() > cooldown) { cooldown = performance.now() + 700; shake(); }
+        last = mag;
+      });
+      btn.hidden = true;
+      note.textContent = '📳 Shake it!';
+    }
+  },
+});
+
+// ===== FEATURES ABOVE THIS LINE =====
+
+/* ---- boot --------------------------------------------------------------------- */
+VERSIONS = [...new Set(FEATURES.map(f => f.since))].sort(cmp);
+LATEST = VERSIONS.at(-1);
+buildPanel();
+
+const q = new URLSearchParams(location.search);
+version = VERSIONS.includes(q.get('v')) ? q.get('v') : LATEST;
+const explicit = q.get('f');
+custom = explicit !== null;
+applyFeatures(custom ? explicit.split(',') : preset(version));
+</script>
+</body>
+</html>
